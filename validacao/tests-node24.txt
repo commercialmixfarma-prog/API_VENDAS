@@ -1,0 +1,26 @@
+▶ API SQL Server somente leitura — testes isolados
+  ✔ configuração de teste completa válida (39.64919ms)
+  ✔ nomes de bancos e UF rejeitam interpolação arbitrária (0.378386ms)
+  ✔ query é de consulta e usa datas parametrizadas (0.363146ms)
+  ✔ bloco PostgreSQL/ETL e scripts de escrita não são distribuídos (0.515767ms)
+  ✔ health não consulta banco (56.178531ms)
+  ✔ vendas sem autenticação não consulta banco (22.797372ms)
+  ✔ login bcrypt emite token de leitura (26.538032ms)
+  ✔ consulta mantém envelope e campos originais (4.656997ms)
+  ✔ resumo aplica devolução, quantidade e UF corretas (4.355183ms)
+  ✔ filtro UF consulta somente o database correspondente (3.276568ms)
+  ✔ datas inexistentes, invertidas, longas e SQL em parâmetros são rejeitados (12.282924ms)
+  ✔ UF não autorizada não consulta banco (1.949428ms)
+  ✔ rota ETL não existe (1.804821ms)
+  ✔ limita consultas em voo e devolve slot após conclusão (11.512155ms)
+  ✔ pool recupera após primeira tentativa de conexão falhar (2.88051ms)
+✔ API SQL Server somente leitura — testes isolados (282.743012ms)
+✔ Excecao TI: dispensa certificado SQL sem desligar criptografia (11.743402ms)
+ℹ tests 17
+ℹ suites 0
+ℹ pass 17
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 588.309274

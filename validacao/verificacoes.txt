@@ -1,0 +1,5 @@
+Node 24: 17 testes passaram, banco simulado.
+YAML parseado com PyYAML: somente api; bind loopback; sem env_file na stack; TLS SQL true; limites 7 dias, 2 consultas, 100/min.
+Dockerfile: Node 24 Alpine, npm ci com lock, USER node, healthcheck.
+Build Docker NAO executado: Docker indisponivel no ambiente de preparacao.
+Deploy no Portainer/VPS e SQL real NAO executados aqui.

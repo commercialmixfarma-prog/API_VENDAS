@@ -1,0 +1,31 @@
+# Docker Standalone / Compose no terminal. Nao iniciar outra copia da mesma API via stack ao mesmo tempo.
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mix-corporativo-api:1.1.1
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 150s
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      TZ: America/Fortaleza
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - api-logs:/app/logs
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  api-logs:
