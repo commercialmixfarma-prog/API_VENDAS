@@ -1,4 +1,4 @@
-# API_GERAL 1.1.1 — Docker e Portainer
+# API_GERAL 1.2.0 — Docker e Portainer
 
 Pacote completo de código-fonte, não uma imagem Docker pronta. Sem .env real, credenciais, node_modules, PostgreSQL, cron ou scripts de escrita. Destinado a **Docker Standalone**. Se o endpoint do Portainer for Swarm, não implantar este YAML sem adaptação.
 
@@ -32,8 +32,8 @@ Rota recomendada: enviar a pasta API_GERAL por SFTP (por exemplo WinSCP), sem no
 
 ```sh
 docker version
-docker build -t mix-corporativo-api:1.1.1 .
-docker image inspect mix-corporativo-api:1.1.1 --format '{{.Os}}/{{.Architecture}}'
+docker build -t mix-corporativo-api:1.2.0 .
+docker image inspect mix-corporativo-api:1.2.0 --format '{{.Os}}/{{.Architecture}}'
 ```
 
 A construção deve ocorrer no MESMO Docker daemon/endpoint que o Portainer gerencia. Construir apenas no Windows não disponibiliza a imagem na VPS. Construindo na VPS evita-se transportar imagem de arquitetura errada. Não é necessário instalar Node ou npm no host.
@@ -60,7 +60,7 @@ Se falhar, validar acesso a 10.4.0.1 e porta real a partir do container. A rota/
 
 ## 5. Criar stack no Portainer
 
-Escolher o endpoint Standalone da VPS. Em Images, confirmar mix-corporativo-api:1.1.1. Em Stacks > Add stack, nome sugerido mix-corporativo-api, Web editor: colar portainer.stack.yml.
+Escolher o endpoint Standalone da VPS. Em Images, confirmar mix-corporativo-api:1.2.0. Em Stacks > Add stack, nome sugerido mix-corporativo-api, Web editor: colar portainer.stack.yml.
 
 Em Environment variables, cadastrar os valores. Ao inserir diretamente no painel **não colocar aspas delimitadoras**, mesmo nos hashes com $. As aspas sintáticas do YAML devem ser mantidas. Nunca colar segredos no YAML. Environment variables são visíveis aos administradores do Docker/Portainer; restringir acesso. Este pacote não usa Docker Secrets.
 
@@ -74,7 +74,7 @@ Em Environment variables, cadastrar os valores. Ao inserir diretamente no painel
 | SQLSERVER_USER | Usuário SQL autorizado, preferencialmente somente leitura |
 | SQLSERVER_PASSWORD | Senha SQL atual, preenchida privadamente |
 
-Demais defaults estão no YAML: API_IMAGE=mix-corporativo-api:1.1.1, SQLSERVER_DATABASE=master, bancos MIX-AL/MIX-SE, VENDAS_UFS=AL,SE. Confirmar nomes antes de implantar. SQLSERVER_TRUST_CERT não é utilizada. Criptografia SQL é fixada em true na stack. Não adicionar NODE_TLS_REJECT_UNAUTHORIZED=0.
+Demais defaults estão no YAML: API_IMAGE=mix-corporativo-api:1.2.0, SQLSERVER_DATABASE=master, bancos MIX-AL/MIX-SE, VENDAS_UFS=AL,SE. Confirmar nomes antes de implantar. SQLSERVER_TRUST_CERT não é utilizada. Criptografia SQL é fixada em true na stack. Não adicionar NODE_TLS_REJECT_UNAUTHORIZED=0.
 
 Se usar a imagem construída localmente na VPS, não habilitar a opção de sempre baixar/re-puxar imagem de registry. Implantar a stack, depois conferir Containers > api > Logs/Health. Não criar segunda stack com o mesmo serviço e porta. Nenhuma instância antiga foi parada ou banco/volume excluído por este pacote.
 

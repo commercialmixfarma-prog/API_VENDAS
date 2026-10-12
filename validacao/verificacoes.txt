@@ -1,5 +1,5 @@
-Node 24: 17 testes passaram, banco simulado.
-YAML parseado com PyYAML: somente api; bind loopback; sem env_file na stack; TLS SQL true; limites 7 dias, 2 consultas, 100/min.
-Dockerfile: Node 24 Alpine, npm ci com lock, USER node, healthcheck.
-Build Docker NAO executado: Docker indisponivel no ambiente de preparacao.
-Deploy no Portainer/VPS e SQL real NAO executados aqui.
+v1.2.0 (08/10/2026): rota /pedidos adicionada; /vendas inalterada (consulta e contrato idênticos a 1.1.1).
+Testes: 28 passaram com banco simulado (tests/readonly.test.js 17 + tests/pedidos.test.js 10 + certificado 1), executados em Node 20 no ambiente de preparação; package.json exige Node 24 (rodar npm test na imagem antes do deploy).
+Teste de contrato: a consulta de pendentes expõe as 52 colunas de /vendas, na mesma ordem e nomes, mais rejeitado_motivo e obs_cancelamento.
+Consulta de CabPedidos: sem filtro de status (todos os pedidos), somente SELECT, datas parametrizadas, identificadores de banco/UF por allowlist.
+SQL real, Docker build e deploy NÃO executados no ambiente de preparação. Rodar validacao/pedidos-validacao.sql antes de publicar.

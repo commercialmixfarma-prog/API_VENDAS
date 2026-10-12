@@ -28,6 +28,7 @@ function createApp() {
   });
   app.use('/auth',require('./routes/auth'));
   app.use('/vendas',require('./routes/vendas'));
+  app.use('/pedidos',require('./routes/pedidos'));
   app.use(notFoundHandler);
   app.use(errorHandler);
   return app;
