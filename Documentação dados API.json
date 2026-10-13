@@ -1,0 +1,1783 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "API Vendas MIX",
+    "version": "1.3.0",
+    "description": "API somente leitura de vendas e pedidos do ERP corporativo. Nenhuma rota altera dados.\n\n**Autenticação**: obtenha um token em `POST /auth/login` e envie `Authorization: Bearer \u003Ctoken\u003E` nas rotas de dados.\nO token tem prazo de validade (`expires_in`); renove quando receber `401` com `erro: \"Token expirado.\"`.\n\n**Formatos de erro** (dois formatos coexistem; trate ambos no consumidor):\n- `{ \"erro\": \"...\" }` em 401/403 de autenticação, 400 de login, 404, 413, 429 e 500.\n- `{ \"success\": false, \"error\": \"...\" }` em 400 de período/UF/filtros e em 503 (com header `Retry-After: 5`).\n\n**Limites**: período máximo por consulta configurado pelo administrador (padrão 7 dias, inclusive);\nnúmero máximo de consultas simultâneas por processo (503 quando excedido); limite de requisições por minuto por IP (429).\nDivida consultas longas em janelas menores e respeite `Retry-After`.\n\nRota inexistente responde `404 { \"erro\": \"Rota não encontrada.\" }`.\n\nPara importar no Postman/Thunder Client use `GET /docs/openapi.json`. O campo `servers` é fixo e configurado pelo administrador;\no padrão `/` significa \"mesma origem onde esta documentação está publicada\"."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Mesma origem desta documentação"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Saúde",
+      "description": "Verificação de disponibilidade do processo HTTP (não consulta o banco)."
+    },
+    {
+      "name": "Autenticação",
+      "description": "Credencial de serviço (máquina para máquina). Não é login de usuário humano."
+    },
+    {
+      "name": "Vendas",
+      "description": "Vendas faturadas por item de pedido. Fonte oficial para apuração de venda realizada."
+    },
+    {
+      "name": "Pedidos",
+      "description": "Todos os pedidos do período, em qualquer status, com situação em tempo real."
+    }
+  ],
+  "paths": {
+    "/auth/login": {
+      "post": {
+        "tags": [
+          "Autenticação"
+        ],
+        "summary": "Emite token de acesso para o cliente de serviço",
+        "description": "Autentica a credencial de máquina (`client_id` + `client_secret`) e devolve um JWT com escopo de leitura. Use o `access_token` no header `Authorization: Bearer \u003Ctoken\u003E` das rotas de dados. Possui limite próprio de tentativas por minuto por IP (429). Credencial inválida sempre responde o mesmo 401, sem indicar qual campo falhou.",
+        "operationId": "postAuthLogin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequisicao"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Token emitido.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResposta"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Campos ausentes/inválidos (`{erro, detalhes}`) ou corpo JSON mal formado (`{erro}` com a mensagem do parser).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErroValidacaoLogin"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErroPadrao"
+                    }
+                  ]
+                },
+                "example": {
+                  "erro": "Dados inválidos.",
+                  "detalhes": [
+                    {
+                      "campo": "client_secret",
+                      "mensagem": "Invalid value"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Credenciais inválidas.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroPadrao"
+                },
+                "example": {
+                  "erro": "Credenciais inválidas."
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Corpo maior que o limite aceito (1 MB).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroPadrao"
+                },
+                "example": {
+                  "erro": "request entity too large"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/LimiteRequisicoes"
+          },
+          "500": {
+            "description": "Falha inesperada ou autenticação não configurada no servidor. Mensagem genérica.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErroPadrao"
+                },
+                "example": {
+                  "erro": "Erro interno do servidor."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Saúde"
+        ],
+        "summary": "Verifica se o processo HTTP está no ar",
+        "description": "Liveness apenas: não consulta o banco nem comprova acesso a ele. Sem autenticação e fora do limite de requisições da API.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Processo em execução.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pedidos": {
+      "get": {
+        "tags": [
+          "Pedidos"
+        ],
+        "summary": "Todos os pedidos do período, em qualquer status",
+        "description": "Linhas de /vendas (origem PAINEL) mais todo pedido do período que a visão de vendas não devolveu, em qualquer status (origem CABPED), sem duplicidade por pedido. Filtros opcionais são aplicados em memória após a consulta. Venda realizada = linhas com origem PAINEL. Nunca somar valor_pedido_bruto de PERDIDO ou EM_ANDAMENTO como venda. Pedido que muda de status depois não tem data de alteração: para D-1 consulte com 2 a 3 dias de retrocesso e faça upsert por id_linha.",
+        "operationId": "getPedidos",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/dataInicio"
+          },
+          {
+            "$ref": "#/components/parameters/dataFim"
+          },
+          {
+            "$ref": "#/components/parameters/status"
+          },
+          {
+            "$ref": "#/components/parameters/situacao"
+          },
+          {
+            "$ref": "#/components/parameters/origem"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Linhas do período (após filtros).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PedidosResposta"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/FiltrosOuPeriodoInvalido"
+          },
+          "401": {
+            "$ref": "#/components/responses/NaoAutenticado"
+          },
+          "403": {
+            "$ref": "#/components/responses/SemPermissao"
+          },
+          "429": {
+            "$ref": "#/components/responses/LimiteRequisicoes"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/LeituraIndisponivel"
+          }
+        }
+      }
+    },
+    "/pedidos/resumo": {
+      "get": {
+        "tags": [
+          "Pedidos"
+        ],
+        "summary": "Pedidos, linhas e valores por status e situação, por UF",
+        "description": "Agrega as mesmas linhas de /pedidos (respeitando os filtros): venda realizada (somente PAINEL), valor bruto por situação e por status, e motivos de rejeição. Venda realizada = linhas com origem PAINEL. Nunca somar valor_pedido_bruto de PERDIDO ou EM_ANDAMENTO como venda. Pedido que muda de status depois não tem data de alteração: para D-1 consulte com 2 a 3 dias de retrocesso e faça upsert por id_linha.",
+        "operationId": "getPedidosResumo",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/dataInicio"
+          },
+          {
+            "$ref": "#/components/parameters/dataFim"
+          },
+          {
+            "$ref": "#/components/parameters/status"
+          },
+          {
+            "$ref": "#/components/parameters/situacao"
+          },
+          {
+            "$ref": "#/components/parameters/origem"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resumo do período.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PedidosResumo"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/FiltrosOuPeriodoInvalido"
+          },
+          "401": {
+            "$ref": "#/components/responses/NaoAutenticado"
+          },
+          "403": {
+            "$ref": "#/components/responses/SemPermissao"
+          },
+          "429": {
+            "$ref": "#/components/responses/LimiteRequisicoes"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/LeituraIndisponivel"
+          }
+        }
+      }
+    },
+    "/pedidos/por-uf/{uf}": {
+      "get": {
+        "tags": [
+          "Pedidos"
+        ],
+        "summary": "Todos os pedidos de uma UF no período",
+        "description": "Mesmo conteúdo de /pedidos restrito à UF informada, consultando apenas a base dela. Venda realizada = linhas com origem PAINEL. Nunca somar valor_pedido_bruto de PERDIDO ou EM_ANDAMENTO como venda. Pedido que muda de status depois não tem data de alteração: para D-1 consulte com 2 a 3 dias de retrocesso e faça upsert por id_linha.",
+        "operationId": "getPedidosPorUf",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/dataInicio"
+          },
+          {
+            "$ref": "#/components/parameters/dataFim"
+          },
+          {
+            "$ref": "#/components/parameters/uf"
+          },
+          {
+            "$ref": "#/components/parameters/status"
+          },
+          {
+            "$ref": "#/components/parameters/situacao"
+          },
+          {
+            "$ref": "#/components/parameters/origem"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Linhas da UF no período (após filtros).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PedidosUfResposta"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/FiltrosOuPeriodoInvalido"
+          },
+          "401": {
+            "$ref": "#/components/responses/NaoAutenticado"
+          },
+          "403": {
+            "$ref": "#/components/responses/SemPermissao"
+          },
+          "429": {
+            "$ref": "#/components/responses/LimiteRequisicoes"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/LeituraIndisponivel"
+          }
+        }
+      }
+    },
+    "/pedidos/status": {
+      "get": {
+        "tags": [
+          "Pedidos"
+        ],
+        "summary": "Dicionário de códigos de status e situações",
+        "description": "Lista estática (não consulta o banco) dos códigos de status conhecidos, seu texto e a situação em que cada um é agrupado. Exige token como as demais rotas de dados.",
+        "operationId": "getPedidosStatus",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dicionário de status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PedidosStatusResposta"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/NaoAutenticado"
+          },
+          "403": {
+            "$ref": "#/components/responses/SemPermissao"
+          },
+          "429": {
+            "$ref": "#/components/responses/LimiteRequisicoes"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          }
+        }
+      }
+    },
+    "/vendas": {
+      "get": {
+        "tags": [
+          "Vendas"
+        ],
+        "summary": "Vendas faturadas de todas as UFs no período",
+        "description": "Uma linha por item de pedido faturado, todas as UFs habilitadas. Para apurar valor use preço × quantidade nas vendas e `total_venda` nas devoluções (operacao 8), como faz /vendas/resumo.",
+        "operationId": "getVendas",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/dataInicio"
+          },
+          {
+            "$ref": "#/components/parameters/dataFim"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Linhas do período.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VendasResposta"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/PeriodoInvalido"
+          },
+          "401": {
+            "$ref": "#/components/responses/NaoAutenticado"
+          },
+          "403": {
+            "$ref": "#/components/responses/SemPermissao"
+          },
+          "429": {
+            "$ref": "#/components/responses/LimiteRequisicoes"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/LeituraIndisponivel"
+          }
+        }
+      }
+    },
+    "/vendas/resumo": {
+      "get": {
+        "tags": [
+          "Vendas"
+        ],
+        "summary": "Totais de venda por UF no período",
+        "description": "Agrega as mesmas linhas de /vendas: itens, vendedores e clientes distintos, valor (2 casas), quantidade e distribuição por canal.",
+        "operationId": "getVendasResumo",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/dataInicio"
+          },
+          {
+            "$ref": "#/components/parameters/dataFim"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resumo do período.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VendasResumo"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/PeriodoInvalido"
+          },
+          "401": {
+            "$ref": "#/components/responses/NaoAutenticado"
+          },
+          "403": {
+            "$ref": "#/components/responses/SemPermissao"
+          },
+          "429": {
+            "$ref": "#/components/responses/LimiteRequisicoes"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/LeituraIndisponivel"
+          }
+        }
+      }
+    },
+    "/vendas/por-uf/{uf}": {
+      "get": {
+        "tags": [
+          "Vendas"
+        ],
+        "summary": "Vendas faturadas de uma UF no período",
+        "description": "Consulta apenas a base da UF informada (não filtra em memória). Preferir esta rota quando só uma UF interessa.",
+        "operationId": "getVendasPorUf",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/dataInicio"
+          },
+          {
+            "$ref": "#/components/parameters/dataFim"
+          },
+          {
+            "$ref": "#/components/parameters/uf"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Linhas da UF no período.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VendasUfResposta"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/UfOuPeriodoInvalido"
+          },
+          "401": {
+            "$ref": "#/components/responses/NaoAutenticado"
+          },
+          "403": {
+            "$ref": "#/components/responses/SemPermissao"
+          },
+          "429": {
+            "$ref": "#/components/responses/LimiteRequisicoes"
+          },
+          "500": {
+            "$ref": "#/components/responses/ErroInterno"
+          },
+          "503": {
+            "$ref": "#/components/responses/LeituraIndisponivel"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "required": [
+          "status",
+          "timestamp"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok"
+            ],
+            "example": "ok"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-09-01T12:00:00.000Z"
+          }
+        }
+      },
+      "LoginRequisicao": {
+        "type": "object",
+        "required": [
+          "client_id",
+          "client_secret"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Identificador do cliente de serviço.",
+            "example": "servico-exemplo"
+          },
+          "client_secret": {
+            "type": "string",
+            "minLength": 1,
+            "format": "password",
+            "description": "Segredo do cliente de serviço (texto original, não o hash). Nunca exponha em front-end."
+          }
+        }
+      },
+      "LoginResposta": {
+        "type": "object",
+        "required": [
+          "access_token",
+          "token_type",
+          "expires_in"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "description": "JWT a enviar em `Authorization: Bearer \u003Caccess_token\u003E`."
+          },
+          "token_type": {
+            "type": "string",
+            "enum": [
+              "Bearer"
+            ],
+            "example": "Bearer"
+          },
+          "expires_in": {
+            "type": "string",
+            "description": "Prazo de validade conforme configurado no servidor, em notação de duração (ex.: `1h`). É texto, não segundos.",
+            "example": "1h"
+          }
+        }
+      },
+      "ErroValidacaoLogin": {
+        "type": "object",
+        "description": "Corpo do login sem `client_id` ou `client_secret` válidos.",
+        "required": [
+          "erro",
+          "detalhes"
+        ],
+        "properties": {
+          "erro": {
+            "type": "string",
+            "example": "Dados inválidos."
+          },
+          "detalhes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "campo",
+                "mensagem"
+              ],
+              "properties": {
+                "campo": {
+                  "type": "string",
+                  "example": "client_id"
+                },
+                "mensagem": {
+                  "type": "string",
+                  "example": "Invalid value"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ErroPadrao": {
+        "type": "object",
+        "description": "Formato de erro das camadas de autenticação, rota inexistente, limite de requisições e erro interno.",
+        "required": [
+          "erro"
+        ],
+        "properties": {
+          "erro": {
+            "type": "string",
+            "example": "Token inválido."
+          }
+        }
+      },
+      "ErroOperacao": {
+        "type": "object",
+        "description": "Formato de erro das validações de período, UF e filtros e da indisponibilidade temporária (503).",
+        "required": [
+          "success",
+          "error"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [false],
+            "example": false
+          },
+          "error": {
+            "type": "string",
+            "example": "UF não configurada."
+          }
+        }
+      },
+      "Periodo": {
+        "type": "object",
+        "required": [
+          "dataInicio",
+          "dataFim"
+        ],
+        "properties": {
+          "dataInicio": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-09-01"
+          },
+          "dataFim": {
+            "type": "string",
+            "format": "date",
+            "example": "2026-09-07"
+          }
+        }
+      },
+      "PedidoLinha": {
+        "description": "Linha de /pedidos: VendaLinha mais as colunas de origem/situação. Nas linhas CABPED, total_venda, tot_desco, desco_iped, imposto_iped, outros_iped, total_cmv e spread vêm nulos; hora vem em hh:mm:ss; pedido sem item vem com id_linha terminado em `SEMITEM`, chave_tipo FALLBACK e valores nulos.",
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/VendaLinha"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "rejeitado_motivo": {
+                "type": "string",
+                "description": "Motivo de rejeição registrado no pedido. Sempre nulo nas linhas PAINEL.",
+                "example": "LIMITE DE CREDITO",
+                "nullable": true
+              },
+              "obs_cancelamento": {
+                "type": "string",
+                "description": "Observação de cancelamento registrada no pedido. Sempre nulo nas linhas PAINEL.",
+                "example": null,
+                "nullable": true
+              },
+              "origem": {
+                "type": "string",
+                "description": "PAINEL = venda faturada (idêntica a /vendas); CABPED = pedido lido do cabeçalho, em qualquer status, que a visão de vendas não devolveu.",
+                "enum": [
+                  "PAINEL",
+                  "CABPED"
+                ],
+                "example": "CABPED"
+              },
+              "valor_pedido_bruto": {
+                "type": "number",
+                "description": "PAINEL: mesma regra de /vendas/resumo (venda = preço × quantidade; devolução = total_venda). CABPED: preço × quantidade × (1 − desconto_item/100), 2 casas. Em PERDIDO/EM_ANDAMENTO é valor em risco, não venda.",
+                "example": 57.05,
+                "nullable": true
+              },
+              "status_descricao": {
+                "type": "string",
+                "description": "Texto do status (ex.: Nota emitida, Rejeitado). Código desconhecido vem como `Status X`; sem status vem `Sem status`.",
+                "example": "Rejeitado"
+              },
+              "situacao": {
+                "type": "string",
+                "description": "Agrupamento do status.",
+                "enum": [
+                  "FATURADO",
+                  "EM_ANDAMENTO",
+                  "PERDIDO",
+                  "OUTRO"
+                ],
+                "example": "PERDIDO"
+              }
+            }
+          }
+        ]
+      },
+      "PedidosResposta": {
+        "type": "object",
+        "required": [
+          "success",
+          "total",
+          "contagem",
+          "data",
+          "periodo"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [true]
+          },
+          "total": {
+            "type": "integer",
+            "description": "Linhas em data (após filtros).",
+            "example": 12827
+          },
+          "contagem": {
+            "type": "object",
+            "required": [
+              "linhasPainel",
+              "linhasCabPed",
+              "linhasCabPedFaturadas"
+            ],
+            "properties": {
+              "linhasPainel": {
+                "type": "integer",
+                "description": "Linhas de venda faturada (origem PAINEL).",
+                "example": 9205
+              },
+              "linhasCabPed": {
+                "type": "integer",
+                "description": "Linhas lidas do cabeçalho (origem CABPED), qualquer status.",
+                "example": 318
+              },
+              "linhasCabPedFaturadas": {
+                "type": "integer",
+                "description": "Subconjunto de linhasCabPed com status faturado: pedido faturado que a visão de vendas não devolveu nesta data.",
+                "example": 12
+              }
+            }
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PedidoLinha"
+            }
+          },
+          "periodo": {
+            "$ref": "#/components/schemas/Periodo"
+          }
+        }
+      },
+      "PedidosUfResposta": {
+        "type": "object",
+        "required": [
+          "success",
+          "total",
+          "uf",
+          "contagem",
+          "data",
+          "periodo"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [true]
+          },
+          "total": {
+            "type": "integer",
+            "description": "Linhas em data (após filtros).",
+            "example": 9523
+          },
+          "uf": {
+            "type": "string",
+            "description": "UF consultada (normalizada em maiúsculas).",
+            "example": "AL"
+          },
+          "contagem": {
+            "type": "object",
+            "required": [
+              "linhasPainel",
+              "linhasCabPed",
+              "linhasCabPedFaturadas"
+            ],
+            "properties": {
+              "linhasPainel": {
+                "type": "integer",
+                "description": "Linhas de venda faturada (origem PAINEL).",
+                "example": 9205
+              },
+              "linhasCabPed": {
+                "type": "integer",
+                "description": "Linhas lidas do cabeçalho (origem CABPED), qualquer status.",
+                "example": 318
+              },
+              "linhasCabPedFaturadas": {
+                "type": "integer",
+                "description": "Subconjunto de linhasCabPed com status faturado: pedido faturado que a visão de vendas não devolveu nesta data.",
+                "example": 12
+              }
+            }
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PedidoLinha"
+            }
+          },
+          "periodo": {
+            "$ref": "#/components/schemas/Periodo"
+          }
+        }
+      },
+      "PedidosResumo": {
+        "type": "object",
+        "required": [
+          "success",
+          "periodo",
+          "totalLinhasGeral",
+          "totalPedidosGeral",
+          "valorVendaRealizadaGeral",
+          "porUf"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [true]
+          },
+          "periodo": {
+            "$ref": "#/components/schemas/Periodo"
+          },
+          "totalLinhasGeral": {
+            "type": "integer",
+            "description": "Linhas em todas as UFs (após filtros).",
+            "example": 12827
+          },
+          "totalPedidosGeral": {
+            "type": "integer",
+            "description": "Pedidos distintos em todas as UFs.",
+            "example": 1655
+          },
+          "valorVendaRealizadaGeral": {
+            "type": "number",
+            "description": "Venda realizada (somente linhas PAINEL), 2 casas.",
+            "example": 251877.9
+          },
+          "porUf": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "empresa": {
+                  "type": "string",
+                  "description": "UF do agrupamento.",
+                  "example": "AL"
+                },
+                "totalLinhas": {
+                  "type": "integer",
+                  "description": "Linhas (itens) na UF.",
+                  "example": 9523
+                },
+                "totalPedidos": {
+                  "type": "integer",
+                  "description": "Pedidos distintos na UF.",
+                  "example": 1210
+                },
+                "valorVendaRealizada": {
+                  "type": "number",
+                  "description": "Soma de valor_pedido_bruto apenas das linhas PAINEL, 2 casas.",
+                  "example": 184230.57
+                },
+                "porSituacao": {
+                  "type": "array",
+                  "description": "Sempre as quatro situações, nesta ordem, mesmo com zero.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "situacao": {
+                        "type": "string",
+                        "description": "Situação.",
+                        "enum": [
+                          "FATURADO",
+                          "EM_ANDAMENTO",
+                          "PERDIDO",
+                          "OUTRO"
+                        ],
+                        "example": "PERDIDO"
+                      },
+                      "pedidos": {
+                        "type": "integer",
+                        "description": "Pedidos distintos.",
+                        "example": 14
+                      },
+                      "linhas": {
+                        "type": "integer",
+                        "description": "Linhas.",
+                        "example": 96
+                      },
+                      "valorBruto": {
+                        "type": "number",
+                        "description": "Soma de valor_pedido_bruto, 2 casas (em PERDIDO é valor em risco).",
+                        "example": 4310.2
+                      }
+                    }
+                  }
+                },
+                "porStatus": {
+                  "type": "array",
+                  "description": "Um item por código de status presente, ordenado pelo código.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "description": "Código de status (texto). Nulo quando o pedido não tem status.",
+                        "example": "R",
+                        "nullable": true
+                      },
+                      "descricao": {
+                        "type": "string",
+                        "description": "Texto do status.",
+                        "example": "Rejeitado"
+                      },
+                      "situacao": {
+                        "type": "string",
+                        "description": "Situação.",
+                        "enum": [
+                          "FATURADO",
+                          "EM_ANDAMENTO",
+                          "PERDIDO",
+                          "OUTRO"
+                        ],
+                        "example": "PERDIDO"
+                      },
+                      "pedidos": {
+                        "type": "integer",
+                        "description": "Pedidos distintos.",
+                        "example": 9
+                      },
+                      "linhas": {
+                        "type": "integer",
+                        "description": "Linhas.",
+                        "example": 61
+                      },
+                      "valorBruto": {
+                        "type": "number",
+                        "description": "Soma de valor_pedido_bruto, 2 casas.",
+                        "example": 2880.75
+                      }
+                    }
+                  }
+                },
+                "motivosRejeicao": {
+                  "type": "array",
+                  "description": "Motivos das linhas PERDIDO, do mais frequente ao menos frequente.",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "motivo": {
+                        "type": "string",
+                        "description": "Motivo registrado ou `Sem motivo informado`.",
+                        "example": "LIMITE DE CREDITO"
+                      },
+                      "pedidos": {
+                        "type": "integer",
+                        "description": "Pedidos distintos com o motivo.",
+                        "example": 5
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "PedidosStatusResposta": {
+        "type": "object",
+        "required": [
+          "success",
+          "situacoes",
+          "status"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [true]
+          },
+          "situacoes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "FATURADO",
+                "EM_ANDAMENTO",
+                "PERDIDO",
+                "OUTRO"
+              ]
+            },
+            "example": [
+              "FATURADO",
+              "EM_ANDAMENTO",
+              "PERDIDO",
+              "OUTRO"
+            ]
+          },
+          "status": {
+            "type": "array",
+            "description": "Dicionário dos códigos conhecidos. Qualquer outro código aparece nas respostas como `Status X` / OUTRO.",
+            "items": {
+              "type": "object",
+              "required": [
+                "status",
+                "descricao",
+                "situacao"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "description": "Código (texto).",
+                  "example": "R"
+                },
+                "descricao": {
+                  "type": "string",
+                  "description": "Texto do status.",
+                  "example": "Rejeitado"
+                },
+                "situacao": {
+                  "type": "string",
+                  "description": "Situação.",
+                  "enum": [
+                    "FATURADO",
+                    "EM_ANDAMENTO",
+                    "PERDIDO",
+                    "OUTRO"
+                  ],
+                  "example": "PERDIDO"
+                }
+              }
+            }
+          }
+        }
+      },
+      "VendaLinha": {
+        "type": "object",
+        "description": "Um item de pedido faturado. `id_linha` é a chave única da linha (UF|empresa|pedido|sequência).",
+        "properties": {
+          "id_linha": {
+            "type": "string",
+            "description": "Chave única da linha: UF|empresa|pedido|sequência do item. Quando a sequência não é localizada, o sufixo passa a ser `P\u003Cproduto\u003EN\u003Cn\u003E` (ver chave_tipo).",
+            "example": "AL|1|1234567|3"
+          },
+          "chave_tipo": {
+            "type": "string",
+            "description": "SEQ quando a sequência do item foi localizada; FALLBACK quando a chave usa produto + ordem.",
+            "enum": [
+              "SEQ",
+              "FALLBACK"
+            ],
+            "example": "SEQ"
+          },
+          "sequencia_iped": {
+            "type": "integer",
+            "description": "Sequência do item dentro do pedido. Nulo em FALLBACK.",
+            "example": 3,
+            "nullable": true
+          },
+          "supervisor_eqp": {
+            "type": "integer",
+            "description": "Código do supervisor da equipe de vendas.",
+            "example": 12,
+            "nullable": true
+          },
+          "abrev_for": {
+            "type": "string",
+            "description": "Abreviação do fornecedor/laboratório do produto.",
+            "example": "LAB EXEMPLO",
+            "nullable": true
+          },
+          "id_cabped": {
+            "type": "integer",
+            "description": "Número do pedido.",
+            "example": 1234567
+          },
+          "descricao_pro": {
+            "type": "string",
+            "description": "Descrição do produto.",
+            "example": "PRODUTO EXEMPLO 500MG 30CPR",
+            "nullable": true
+          },
+          "data": {
+            "type": "string",
+            "description": "Data da venda (data/hora em ISO 8601).",
+            "format": "date-time",
+            "example": "2026-09-04T00:00:00.000Z"
+          },
+          "preco_iped": {
+            "type": "number",
+            "description": "Preço unitário líquido praticado na linha. Em devolução (operacao 8) vem 0; use total_venda.",
+            "example": 12.5
+          },
+          "quantidade_Iped": {
+            "type": "number",
+            "description": "Quantidade vendida na unidade final. Negativa em devolução.",
+            "example": 10
+          },
+          "promocao_iped": {
+            "type": "integer",
+            "description": "Código da promoção aplicada (0 ou nulo quando não há).",
+            "example": 0,
+            "nullable": true
+          },
+          "operador": {
+            "type": "string",
+            "description": "Operador/sistema que registrou o pedido.",
+            "example": "EXEMPLO",
+            "nullable": true
+          },
+          "vendedor": {
+            "type": "integer",
+            "description": "Código do vendedor.",
+            "example": 45,
+            "nullable": true
+          },
+          "empresa_eqp": {
+            "type": "integer",
+            "description": "Empresa da equipe de vendas.",
+            "example": 1,
+            "nullable": true
+          },
+          "abrev_par": {
+            "type": "string",
+            "description": "Abreviação da empresa (filial) emitente.",
+            "example": "FILIAL EXEMPLO",
+            "nullable": true
+          },
+          "nome_cli": {
+            "type": "string",
+            "description": "Razão social do cliente.",
+            "example": "FARMACIA EXEMPLO LTDA",
+            "nullable": true
+          },
+          "cnpj_cli": {
+            "type": "string",
+            "description": "CNPJ do cliente, conforme armazenado no ERP.",
+            "nullable": true
+          },
+          "grupo_cli": {
+            "type": "integer",
+            "description": "Código do grupo comercial do cliente.",
+            "example": 7,
+            "nullable": true
+          },
+          "nome_grupcom": {
+            "type": "string",
+            "description": "Nome do grupo comercial.",
+            "example": "GRUPO EXEMPLO",
+            "nullable": true
+          },
+          "id_conv": {
+            "type": "integer",
+            "description": "Código do convênio do cliente.",
+            "example": 3,
+            "nullable": true
+          },
+          "nome_conv": {
+            "type": "string",
+            "description": "Nome do convênio.",
+            "example": "CONVENIO EXEMPLO",
+            "nullable": true
+          },
+          "cod_barra_pro": {
+            "type": "string",
+            "description": "Código de barras (EAN) do produto.",
+            "example": "7890000000000",
+            "nullable": true
+          },
+          "descricao_cprom": {
+            "type": "string",
+            "description": "Descrição da promoção aplicada.",
+            "example": "CAMPANHA EXEMPLO",
+            "nullable": true
+          },
+          "canal": {
+            "type": "string",
+            "description": "Canal de venda derivado da forma de captação do pedido (ex.: EDI-VAN, CALL CENTER, POR VENDEDOR, E-COMMERCE).",
+            "example": "CALL CENTER",
+            "nullable": true
+          },
+          "nome_vendedor": {
+            "type": "string",
+            "description": "Nome do vendedor.",
+            "example": "VENDEDOR EXEMPLO",
+            "nullable": true
+          },
+          "nome_televenda": {
+            "type": "string",
+            "description": "Nome do operador de televendas.",
+            "example": "TELEVENDAS EXEMPLO",
+            "nullable": true
+          },
+          "UF": {
+            "type": "string",
+            "description": "UF da base consultada.",
+            "example": "AL"
+          },
+          "total_venda": {
+            "type": "number",
+            "description": "Valor líquido total da linha. Negativo em devolução. Nulo nas linhas CABPED de /pedidos.",
+            "example": 125,
+            "nullable": true
+          },
+          "tot_desco": {
+            "type": "number",
+            "description": "Total de desconto informado pelo ERP (não é desconto de linha; uso informativo).",
+            "example": 0,
+            "nullable": true
+          },
+          "desco_iped": {
+            "type": "number",
+            "description": "Desconto do item informado pelo ERP (uso informativo).",
+            "example": 0,
+            "nullable": true
+          },
+          "imposto_iped": {
+            "type": "number",
+            "description": "Impostos da linha.",
+            "example": 2.1,
+            "nullable": true
+          },
+          "outros_iped": {
+            "type": "number",
+            "description": "Outros valores da linha.",
+            "example": 0,
+            "nullable": true
+          },
+          "total_cmv": {
+            "type": "number",
+            "description": "Custo da mercadoria vendida na linha.",
+            "example": 98.3,
+            "nullable": true
+          },
+          "spread": {
+            "type": "number",
+            "description": "Margem (spread) da linha.",
+            "example": 26.7,
+            "nullable": true
+          },
+          "unidade_iped": {
+            "type": "number",
+            "description": "Unidade do item conforme ERP (0 quando não aplicável).",
+            "example": 0,
+            "nullable": true
+          },
+          "conversao_iped": {
+            "type": "number",
+            "description": "Fator de conversão de unidade conforme ERP (0 quando não aplicável).",
+            "example": 0,
+            "nullable": true
+          },
+          "desconto_item": {
+            "type": "number",
+            "description": "Percentual de desconto do item (ex.: 10 = 10%).",
+            "example": 10,
+            "nullable": true
+          },
+          "oferta_iped": {
+            "type": "number",
+            "description": "Indicador/valor de oferta do item conforme ERP.",
+            "example": 0,
+            "nullable": true
+          },
+          "empresa_par": {
+            "type": "integer",
+            "description": "Código da empresa (filial).",
+            "example": 1
+          },
+          "produto_iped": {
+            "type": "integer",
+            "description": "Código interno do produto.",
+            "example": 55021,
+            "nullable": true
+          },
+          "id_for": {
+            "type": "integer",
+            "description": "Código do fornecedor/laboratório.",
+            "example": 310,
+            "nullable": true
+          },
+          "id_cliente": {
+            "type": "integer",
+            "description": "Código do cliente.",
+            "example": 8801,
+            "nullable": true
+          },
+          "operacao": {
+            "type": "integer",
+            "description": "Operação do item: 8 = devolução; demais códigos são vendas.",
+            "example": 1,
+            "nullable": true
+          },
+          "tipo_pro": {
+            "type": "string",
+            "description": "Tipo do produto conforme cadastro.",
+            "example": "M",
+            "nullable": true
+          },
+          "hora": {
+            "type": "string",
+            "description": "Hora do pedido. Formato conforme o ERP (hh:mm:ss ou data/hora ISO).",
+            "example": "08:15:30",
+            "nullable": true
+          },
+          "pedido_por": {
+            "type": "integer",
+            "description": "Forma de captação do pedido (ex.: 9 = integração/EDI, 1 = call center, 0 = vendedor).",
+            "example": 9,
+            "nullable": true
+          },
+          "equipe": {
+            "type": "integer",
+            "description": "Código da equipe de vendas.",
+            "example": 4,
+            "nullable": true
+          },
+          "condicao_cabped": {
+            "type": "integer",
+            "description": "Condição de pagamento do pedido.",
+            "example": 30,
+            "nullable": true
+          },
+          "status_cabped": {
+            "type": "string",
+            "description": "Código de status do pedido, sempre texto (ex.: `5`, `R`, `A`). Dicionário em GET /pedidos/status.",
+            "example": "5",
+            "nullable": true
+          },
+          "operacao_cabped": {
+            "type": "integer",
+            "description": "Operação do cabeçalho do pedido.",
+            "example": 1,
+            "nullable": true
+          },
+          "nota_cabped": {
+            "type": "integer",
+            "description": "Número da nota fiscal emitida (nulo sem nota).",
+            "example": 987654,
+            "nullable": true
+          },
+          "data_dia": {
+            "type": "string",
+            "description": "Data da venda no formato YYYY-MM-DD.",
+            "format": "date",
+            "example": "2026-09-04"
+          }
+        }
+      },
+      "VendasResposta": {
+        "type": "object",
+        "required": [
+          "success",
+          "total",
+          "data",
+          "periodo"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [true]
+          },
+          "total": {
+            "type": "integer",
+            "description": "Quantidade de linhas em data.",
+            "example": 12509
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VendaLinha"
+            }
+          },
+          "periodo": {
+            "$ref": "#/components/schemas/Periodo"
+          }
+        }
+      },
+      "VendasUfResposta": {
+        "type": "object",
+        "required": [
+          "success",
+          "total",
+          "uf",
+          "data",
+          "periodo"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [true]
+          },
+          "total": {
+            "type": "integer",
+            "description": "Quantidade de linhas em data.",
+            "example": 9205
+          },
+          "uf": {
+            "type": "string",
+            "description": "UF consultada (normalizada em maiúsculas).",
+            "example": "AL"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VendaLinha"
+            }
+          },
+          "periodo": {
+            "$ref": "#/components/schemas/Periodo"
+          }
+        }
+      },
+      "VendasResumo": {
+        "type": "object",
+        "required": [
+          "success",
+          "periodo",
+          "totalItensGeral",
+          "totalVendedoresGeral",
+          "totalClientesGeral",
+          "totalVendaValorGeral",
+          "totalQuantidadeGeral",
+          "porUf"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "enum": [true]
+          },
+          "periodo": {
+            "$ref": "#/components/schemas/Periodo"
+          },
+          "totalItensGeral": {
+            "type": "integer",
+            "description": "Linhas em todas as UFs.",
+            "example": 12509
+          },
+          "totalVendedoresGeral": {
+            "type": "integer",
+            "description": "Vendedores distintos (UF|código).",
+            "example": 63
+          },
+          "totalClientesGeral": {
+            "type": "integer",
+            "description": "Clientes distintos (UF|código).",
+            "example": 840
+          },
+          "totalVendaValorGeral": {
+            "type": "number",
+            "description": "Valor de venda total, 2 casas.",
+            "example": 251877.9
+          },
+          "totalQuantidadeGeral": {
+            "type": "number",
+            "description": "Quantidade total (devoluções abatem).",
+            "example": 41002
+          },
+          "porUf": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "empresa": {
+                  "type": "string",
+                  "description": "UF do agrupamento.",
+                  "example": "AL"
+                },
+                "totalItens": {
+                  "type": "integer",
+                  "description": "Quantidade de linhas (itens).",
+                  "example": 9205
+                },
+                "totalVendedores": {
+                  "type": "integer",
+                  "description": "Vendedores distintos.",
+                  "example": 41
+                },
+                "totalClientes": {
+                  "type": "integer",
+                  "description": "Clientes distintos.",
+                  "example": 612
+                },
+                "totalVendaValor": {
+                  "type": "number",
+                  "description": "Valor de venda (preço × quantidade; devoluções abatem pelo total_venda), 2 casas.",
+                  "example": 184230.57
+                },
+                "totalQuantidade": {
+                  "type": "number",
+                  "description": "Soma das quantidades (devoluções negativas).",
+                  "example": 30210
+                },
+                "canalDistribuicao": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "canal": {
+                        "type": "string",
+                        "description": "Canal de venda.",
+                        "example": "EDI-VAN"
+                      },
+                      "count": {
+                        "type": "integer",
+                        "description": "Linhas no canal.",
+                        "example": 7102
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "dataInicio": {
+        "name": "dataInicio",
+        "in": "query",
+        "required": true,
+        "description": "Primeiro dia do período (inclusive), formato YYYY-MM-DD. Data inexistente (ex.: 30/02) é rejeitada.",
+        "schema": {
+          "type": "string",
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "example": "2026-09-01"
+        }
+      },
+      "dataFim": {
+        "name": "dataFim",
+        "in": "query",
+        "required": true,
+        "description": "Último dia do período (inclusive), formato YYYY-MM-DD, igual ou posterior a dataInicio. O intervalo não pode exceder o máximo configurado (padrão 7 dias).",
+        "schema": {
+          "type": "string",
+          "format": "date",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "example": "2026-09-07"
+        }
+      },
+      "uf": {
+        "name": "uf",
+        "in": "path",
+        "required": true,
+        "description": "Sigla da UF (duas letras, maiúsculas ou minúsculas). Apenas UFs habilitadas pelo administrador; outras respondem 400.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z]{2}$",
+          "example": "AL"
+        }
+      },
+      "status": {
+        "name": "status",
+        "in": "query",
+        "required": false,
+        "description": "Filtro por código de status do pedido, separados por vírgula (ex.: `R,A` ou `5`). Códigos conhecidos em `GET /pedidos/status`. Aplicado após a consulta.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[0-9A-Za-z]{1,2}(,[0-9A-Za-z]{1,2})*$",
+          "example": "R,A"
+        }
+      },
+      "situacao": {
+        "name": "situacao",
+        "in": "query",
+        "required": false,
+        "description": "Filtro por situação, separadas por vírgula. Valores: FATURADO, EM_ANDAMENTO, PERDIDO, OUTRO.",
+        "schema": {
+          "type": "string",
+          "pattern": "^(FATURADO|EM_ANDAMENTO|PERDIDO|OUTRO)(,(FATURADO|EM_ANDAMENTO|PERDIDO|OUTRO))*$",
+          "example": "PERDIDO"
+        }
+      },
+      "origem": {
+        "name": "origem",
+        "in": "query",
+        "required": false,
+        "description": "Filtro por origem da linha, separadas por vírgula. PAINEL = venda faturada (mesmas linhas de /vendas); CABPED = pedido lido do cabeçalho, em qualquer status.",
+        "schema": {
+          "type": "string",
+          "pattern": "^(PAINEL|CABPED)(,(PAINEL|CABPED))*$",
+          "example": "CABPED"
+        }
+      }
+    },
+    "responses": {
+      "NaoAutenticado": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErroPadrao"
+            },
+            "example": {
+              "erro": "Token de autenticação ausente ou mal formatado."
+            }
+          }
+        },
+        "description": "Bearer ausente/mal formatado, token inválido ou expirado (`erro: \"Token expirado.\"`)."
+      },
+      "SemPermissao": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErroPadrao"
+            },
+            "example": {
+              "erro": "Token sem permissão de leitura."
+            }
+          }
+        },
+        "description": "Token válido, mas emitido para outro cliente ou sem o escopo de leitura."
+      },
+      "PeriodoInvalido": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErroOperacao"
+            },
+            "example": {
+              "success": false,
+              "error": "Informe datas reais no formato YYYY-MM-DD e dataFim igual ou posterior a dataInicio."
+            }
+          }
+        },
+        "description": "Datas ausentes, inválidas, invertidas ou período maior que o máximo configurado."
+      },
+      "UfOuPeriodoInvalido": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErroOperacao"
+            },
+            "example": {
+              "success": false,
+              "error": "UF não configurada."
+            }
+          }
+        },
+        "description": "Período inválido (ver PeriodoInvalido) ou UF não habilitada."
+      },
+      "FiltrosOuPeriodoInvalido": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErroOperacao"
+            },
+            "example": {
+              "success": false,
+              "error": "Parâmetro situacao inválido."
+            }
+          }
+        },
+        "description": "Período inválido, UF não habilitada ou filtro `status`/`situacao`/`origem` fora da lista permitida."
+      },
+      "LimiteRequisicoes": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErroPadrao"
+            },
+            "example": {
+              "erro": "Muitas requisições. Tente novamente em instantes."
+            }
+          }
+        },
+        "description": "Limite de requisições por minuto por IP excedido. Observe os headers `RateLimit-*`."
+      },
+      "ErroInterno": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErroPadrao"
+            },
+            "example": {
+              "erro": "Erro interno do servidor."
+            }
+          }
+        },
+        "description": "Falha inesperada (inclusive indisponibilidade do banco). A mensagem é sempre genérica; detalhes ficam só no log do servidor."
+      },
+      "LeituraIndisponivel": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErroOperacao"
+            },
+            "example": {
+              "success": false,
+              "error": "Consultas simultâneas no limite. Tente novamente após alguns segundos."
+            }
+          }
+        },
+        "description": "Número máximo de consultas simultâneas atingido. Repita após o tempo indicado em `Retry-After`.",
+        "headers": {
+          "Retry-After": {
+            "description": "Segundos sugeridos para nova tentativa.",
+            "schema": {
+              "type": "string",
+              "example": "5"
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Token emitido por `POST /auth/login`. Cole apenas o valor de `access_token` (sem o prefixo Bearer)."
+      }
+    }
+  }
+}

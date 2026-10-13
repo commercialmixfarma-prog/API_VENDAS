@@ -28,6 +28,39 @@ function getDatabasesPorUf() {
   }
   return map;
 }
+const BCRYPT_HASH = /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/;
+function docsServerUrl(value) {
+  // URL fixa dos "servers" da spec. Nunca derivada de Host/X-Forwarded-*: vem só de configuração.
+  if (value === undefined || value === '') return '/';
+  if (typeof value !== 'string' || value.length > 2048 || /\s/.test(value)) throw new Error('DOCS_SERVER_URL inválida.');
+  if (value.startsWith('/')) {
+    if (value.startsWith('//') || !/^\/[A-Za-z0-9._~/-]*$/.test(value)) throw new Error('DOCS_SERVER_URL relativa deve conter apenas um caminho simples (ex.: /api).');
+    return value;
+  }
+  let url;
+  try { url = new URL(value); } catch { throw new Error('DOCS_SERVER_URL deve ser um caminho iniciado por / ou uma URL http(s) absoluta.'); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error('DOCS_SERVER_URL deve ser http(s), sem credenciais, query ou fragmento.');
+  }
+  return value;
+}
+function getDocsSettings() {
+  // Lida em tempo de execução (createApp/validateStartup), não no import: os testes alternam os valores.
+  const production = process.env.NODE_ENV === 'production';
+  const enabled = boolEnv('DOCS_ENABLED', !production);
+  const rateLimitMax = intEnv('DOCS_RATE_LIMIT_MAX', 60, 1, 10000);
+  const serverUrl = docsServerUrl(process.env.DOCS_SERVER_URL);
+  const basicUser = process.env.DOCS_BASIC_USER || '';
+  const basicPasswordHash = process.env.DOCS_BASIC_PASSWORD_HASH || '';
+  if (basicUser || basicPasswordHash) {
+    if (!basicUser || !basicPasswordHash) throw new Error('DOCS_BASIC_USER e DOCS_BASIC_PASSWORD_HASH devem ser preenchidas em conjunto.');
+    if (!BCRYPT_HASH.test(basicPasswordHash)) throw new Error('DOCS_BASIC_PASSWORD_HASH deve conter hash bcrypt, não senha em texto.');
+  }
+  if (enabled && production && !basicUser) {
+    throw new Error('DOCS_ENABLED=true em produção exige DOCS_BASIC_USER e DOCS_BASIC_PASSWORD_HASH (Basic Auth).');
+  }
+  return { enabled, production, rateLimitMax, serverUrl, basicUser, basicPasswordHash, basicAuthRequired: Boolean(basicUser) };
+}
 function validateStartup() {
   for (const key of ['SQLSERVER_HOST','SQLSERVER_USER','SQLSERVER_PASSWORD','SERVICE_CLIENT_ID','SERVICE_CLIENT_SECRET','JWT_SECRET']) {
     if (!process.env[key]) throw new Error(`Variável obrigatória não preenchida: ${key}`);
@@ -50,5 +83,6 @@ function validateStartup() {
   boolEnv('SQLSERVER_ENCRYPT',true);
   databaseName(process.env.SQLSERVER_DATABASE || 'master');
   getDatabasesPorUf();
+  getDocsSettings();
 }
-module.exports = { intEnv, boolEnv, databaseName, getDatabasesPorUf, validateStartup };
+module.exports = { intEnv, boolEnv, databaseName, getDatabasesPorUf, getDocsSettings, docsServerUrl, validateStartup };

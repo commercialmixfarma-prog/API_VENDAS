@@ -1,4 +1,4 @@
-# API_GERAL 1.2.0 — Docker e Portainer
+# API_GERAL 1.3.0 — Docker e Portainer
 
 Pacote completo de código-fonte, não uma imagem Docker pronta. Sem .env real, credenciais, node_modules, PostgreSQL, cron ou scripts de escrita. Destinado a **Docker Standalone**. Se o endpoint do Portainer for Swarm, não implantar este YAML sem adaptação.
 
@@ -32,8 +32,8 @@ Rota recomendada: enviar a pasta API_GERAL por SFTP (por exemplo WinSCP), sem no
 
 ```sh
 docker version
-docker build -t mix-corporativo-api:1.2.0 .
-docker image inspect mix-corporativo-api:1.2.0 --format '{{.Os}}/{{.Architecture}}'
+docker build -t mix-corporativo-api:1.3.0 .
+docker image inspect mix-corporativo-api:1.3.0 --format '{{.Os}}/{{.Architecture}}'
 ```
 
 A construção deve ocorrer no MESMO Docker daemon/endpoint que o Portainer gerencia. Construir apenas no Windows não disponibiliza a imagem na VPS. Construindo na VPS evita-se transportar imagem de arquitetura errada. Não é necessário instalar Node ou npm no host.
@@ -60,7 +60,7 @@ Se falhar, validar acesso a 10.4.0.1 e porta real a partir do container. A rota/
 
 ## 5. Criar stack no Portainer
 
-Escolher o endpoint Standalone da VPS. Em Images, confirmar mix-corporativo-api:1.2.0. Em Stacks > Add stack, nome sugerido mix-corporativo-api, Web editor: colar portainer.stack.yml.
+Escolher o endpoint Standalone da VPS. Em Images, confirmar mix-corporativo-api:1.3.0. Em Stacks > Add stack, nome sugerido mix-corporativo-api, Web editor: colar portainer.stack.yml.
 
 Em Environment variables, cadastrar os valores. Ao inserir diretamente no painel **não colocar aspas delimitadoras**, mesmo nos hashes com $. As aspas sintáticas do YAML devem ser mantidas. Nunca colar segredos no YAML. Environment variables são visíveis aos administradores do Docker/Portainer; restringir acesso. Este pacote não usa Docker Secrets.
 
@@ -74,7 +74,7 @@ Em Environment variables, cadastrar os valores. Ao inserir diretamente no painel
 | SQLSERVER_USER | Usuário SQL autorizado, preferencialmente somente leitura |
 | SQLSERVER_PASSWORD | Senha SQL atual, preenchida privadamente |
 
-Demais defaults estão no YAML: API_IMAGE=mix-corporativo-api:1.2.0, SQLSERVER_DATABASE=master, bancos MIX-AL/MIX-SE, VENDAS_UFS=AL,SE. Confirmar nomes antes de implantar. SQLSERVER_TRUST_CERT não é utilizada. Criptografia SQL é fixada em true na stack. Não adicionar NODE_TLS_REJECT_UNAUTHORIZED=0.
+Demais defaults estão no YAML: API_IMAGE=mix-corporativo-api:1.3.0, SQLSERVER_DATABASE=master, bancos MIX-AL/MIX-SE, VENDAS_UFS=AL,SE. Confirmar nomes antes de implantar. SQLSERVER_TRUST_CERT não é utilizada. Criptografia SQL é fixada em true na stack. Não adicionar NODE_TLS_REJECT_UNAUTHORIZED=0.
 
 Se usar a imagem construída localmente na VPS, não habilitar a opção de sempre baixar/re-puxar imagem de registry. Implantar a stack, depois conferir Containers > api > Logs/Health. Não criar segunda stack com o mesmo serviço e porta. Nenhuma instância antiga foi parada ou banco/volume excluído por este pacote.
 
@@ -110,7 +110,33 @@ Se o proxy roda no host, encaminhar para 127.0.0.1:3000. Se roda em outro contai
 
 Sem HTTPS/proxy e validação real da VPS, considerar implantação somente homologação. O endereço do SQL não é o endereço público da API.
 
-## 8. Escopo das validações da entrega
+## 8. Documentação da API (/docs): desligada por padrão em produção
+
+A versão 1.3.0 inclui Swagger UI em `GET /docs` e a especificação OpenAPI 3.0.3 em `GET /docs/openapi.json` (importável no Postman/Thunder Client). Com `NODE_ENV=production` o padrão é **desligado**: `/docs` responde `404 {"erro":"Rota não encontrada."}` como qualquer rota inexistente, e nenhum arquivo da UI é servido. Fora de produção (`npm run dev`, testes) o padrão é ligado, sem Basic Auth.
+
+| Variável | Padrão | Preenchimento |
+|---|---|---|
+| DOCS_ENABLED | `false` em produção; `true` nos demais ambientes | `true` liga a documentação. A stack e o compose já usam `${DOCS_ENABLED:-false}`. |
+| DOCS_BASIC_USER | vazio | Usuário do Basic Auth da documentação. **Obrigatório** quando `DOCS_ENABLED=true` em produção; o container não sobe sem ele. |
+| DOCS_BASIC_PASSWORD_HASH | vazio | Hash bcrypt da senha do Basic Auth (não a senha). Gerar com `node src/scripts/gerarHashSenha.js "senha"` e copiar só o hash (o rótulo impresso é SERVICE_CLIENT_SECRET, mas o valor serve). Use uma senha diferente da do cliente de serviço. |
+| DOCS_SERVER_URL | `/` | URL fixa do campo `servers` da spec. `/` = mesma origem onde a documentação é publicada (recomendado atrás do proxy HTTPS). Aceita só caminho iniciado por `/` ou URL http(s) absoluta sem credenciais/query. Nunca é derivada de Host ou X-Forwarded-*. |
+| DOCS_RATE_LIMIT_MAX | `60` | Requisições por minuto por IP exclusivas de `/docs` (UI, assets e openapi.json). Não consome o limite de 100/min da API. |
+
+Comportamento com docs ligados: Basic Auth em todas as rotas `/docs/*` (401 com `WWW-Authenticate`, usuário comparado em tempo constante e senha via bcrypt), `Cache-Control: no-store`, `X-Robots-Tag: noindex`, acessos e 401 registrados no log sem credenciais, token do Authorize mantido só na memória da página (`persistAuthorization=false`), sem validador externo nem links externos. O CSP global do helmet não foi alterado. Não há allowlist de IP: com a porta em 127.0.0.1 atrás de proxy e `TRUST_PROXY_HOPS=0`, `req.ip` seria o IP do proxy, não do cliente.
+
+Recomendação: manter desligada em produção. Ligar só em homologação ou temporariamente, com Basic Auth, atrás de HTTPS, e desligar depois. Não publicar `/docs` na Internet sem proxy HTTPS.
+
+### Escapar o `$` do hash bcrypt
+
+O hash bcrypt começa com `$2a$`/`$2b$` e contém vários `$`. Como preencher sem o Compose/Portainer interpretar como variável:
+
+- **Portainer > Environment variables**: colar o hash puro, sem aspas e sem escapar. O Portainer não expande `$` nos valores.
+- **Arquivo `.env` lido pelo `docker compose` (env_file ou interpolação da stack)**: duplicar cada `$`: `DOCS_BASIC_PASSWORD_HASH='$$2b$$12$$...'`. Confirmar com `docker compose config` que o valor final tem `$` simples. Alternativa: aspas simples funcionam para o `env_file` (o container recebe o valor literal), mas **não** para interpolação `${VAR}` dentro do YAML; na dúvida, duplique.
+- **Nunca** colar o hash dentro do YAML da stack: os arquivos usam `${DOCS_BASIC_PASSWORD_HASH:-}` justamente para o segredo ficar fora do repositório.
+
+Teste rápido na VPS (túnel SSH igual ao item 6): `curl -i -u USUARIO http://localhost:3001/docs/` deve pedir a senha e responder 200; sem `-u`, 401; com `DOCS_ENABLED=false`, 404.
+
+## 9. Escopo das validações da entrega
 
 Testes automatizados e verificações estáticas acompanham validacao/. Testes usam banco simulado, sem SQL corporativo. O usuário confirmou consulta local real correta antes de pedir esta entrega, mas não informou total/duração/UF; não se inventaram métricas.
 

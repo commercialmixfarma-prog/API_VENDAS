@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: mix-corporativo-api:1.1.1
+    image: mix-corporativo-api:1.3.0
     init: true
     restart: unless-stopped
     stop_grace_period: 150s
@@ -14,6 +14,13 @@ services:
       NODE_ENV: production
       PORT: "3000"
       TZ: America/Fortaleza
+      # Documentacao (/docs). Padrao em producao: desligada. Se ligar, Basic Auth e obrigatorio.
+      # Segredos somente via variavel do ambiente/.env; escapar "$" do hash bcrypt como "$$" no .env do Compose.
+      DOCS_ENABLED: "${DOCS_ENABLED:-false}"
+      DOCS_BASIC_USER: "${DOCS_BASIC_USER:-}"
+      DOCS_BASIC_PASSWORD_HASH: "${DOCS_BASIC_PASSWORD_HASH:-}"
+      DOCS_SERVER_URL: "${DOCS_SERVER_URL:-/}"
+      DOCS_RATE_LIMIT_MAX: "${DOCS_RATE_LIMIT_MAX:-60}"
     ports:
       - "127.0.0.1:3000:3000"
     volumes:

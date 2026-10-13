@@ -4,7 +4,8 @@ const helmet=require('helmet');
 const cors=require('cors');
 const compression=require('compression');
 const logger=require('./config/logger');
-const {intEnv,validateStartup}=require('./config/settings');
+const {intEnv,validateStartup,getDocsSettings}=require('./config/settings');
+const {createDocsRouter}=require('./openapi/router');
 const {generalLimiter}=require('./middleware/rateLimiter');
 const {errorHandler,notFoundHandler}=require('./middleware/errorHandler');
 const {closeAllPools}=require('./config/sqlServer');
@@ -19,6 +20,10 @@ function createApp() {
   app.use(compression());
   // Liveness apenas. Não dispara consulta nem comprova acesso ao SQL Server.
   app.get('/health',(req,res)=>res.json({status:'ok',timestamp:new Date().toISOString()}));
+  // Documentação: lida aqui (não no import) e montada antes do generalLimiter, com limiter próprio.
+  // Desligada, nenhuma rota existe e /docs cai no notFoundHandler.
+  const docs=getDocsSettings();
+  if(docs.enabled) app.use('/docs',createDocsRouter(docs,{version:require('../package.json').version}));
   app.use(express.json({limit:'1mb'}));
   app.use(generalLimiter);
   app.use((req,res,next)=>{
