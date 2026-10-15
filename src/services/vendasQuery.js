@@ -13,7 +13,7 @@ const { databaseName, getDatabasesPorUf } = require('../config/settings');
  * dbName e uf vêm de configuração administrativa validada por allowlist.
  * Datas sempre são parâmetros, nunca SQL fornecido por requisição HTTP.
  *
- * Saída: 52 colunas, mesmos nomes da API MIX Vendas v2 já validada
+ * Saída: 54 colunas, mesmos nomes da API MIX Vendas v2 já validada
  * (id_linha, chave_tipo, sequencia_iped, ...24 colunas originais..., total_venda,
  * ..., operacao, ..., data_dia). Contrato preservado da consulta recebida.
  */
@@ -84,6 +84,8 @@ SELECT
     p.[Outros_iped]    AS outros_iped,
     p.[TotalCMV]       AS total_cmv,
     p.[Spread]         AS spread,
+    p.[OUTROSCUSTO]    AS TOTAL_ICMS,
+    p.[CustoMedio_infpro]  AS CUSTO_MEDIO,
 
     i.Unidade_IPed     AS unidade_iped,
     i.Conversao_IPed   AS conversao_iped,
